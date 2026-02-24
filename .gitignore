@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# IDE
+.idea/
