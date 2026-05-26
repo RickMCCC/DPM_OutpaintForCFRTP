@@ -16,6 +16,9 @@ __pycache__/
 .vscode/
 .claude/
 
+# Reference archives (large, not needed in version control)
+archive/improved-diffusion-upstream/
+
 # Logs
 *.log
 
