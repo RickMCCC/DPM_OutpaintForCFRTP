@@ -1,0 +1,6 @@
+# Evaluation and visualization dependencies
+-r requirements.txt
+opencv-python>=4.8.0
+scipy>=1.10.0
+scikit-image>=0.21.0
+matplotlib>=3.7.0

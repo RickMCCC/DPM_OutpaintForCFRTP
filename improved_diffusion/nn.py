@@ -16,7 +16,13 @@ class SiLU(nn.Module):
 
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
+        return th.nn.functional.group_norm(
+            x.float(),
+            self.num_groups,
+            self.weight.float() if self.weight is not None else None,
+            self.bias.float() if self.bias is not None else None,
+            self.eps,
+        ).type(x.dtype)
 
 
 def conv_nd(dims, *args, **kwargs):

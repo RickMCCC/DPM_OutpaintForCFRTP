@@ -1,0 +1,23 @@
+# 3D VAE training configuration
+data:
+  train_dir: data/processed/l2-1.485_train
+  val_dir: data/processed/l2-1.485_val
+
+output:
+  dir: outputs/checkpoints/vae_3d
+
+model:
+  latent_channels: 8
+  hidden_channels: 64
+  num_res_blocks: 3
+  num_downsamples: 2   # 2 = 4x spatial compression
+
+training:
+  lr: 1.0e-4
+  batch_size: 4
+  epochs: 200
+  crop_size: 256
+  kl_weight: 0.001
+  perceptual_weight: 0.1
+  log_interval: 100
+  save_interval: 500

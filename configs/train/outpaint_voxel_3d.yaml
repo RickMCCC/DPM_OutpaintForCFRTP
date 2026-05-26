@@ -1,0 +1,38 @@
+# 3D Voxel-space outpainting training (no VAE compression)
+data:
+  train_root: data/processed/l2-1.485_train
+  val_root: data/processed/l2-1.485_val
+
+output:
+  dir: outputs/experiments/voxel_outpaint
+
+model:
+  volume_size: 256
+  num_channels: 128
+  num_res_blocks: 3
+  attention_resolutions: ""
+  dropout: 0.0
+  learn_sigma: false
+  use_checkpoint: true
+  num_heads: 4
+  num_heads_upsample: -1
+
+diffusion:
+  steps: 1000
+  noise_schedule: cosine
+  timestep_respacing: ""
+  use_kl: false
+  rescale_timesteps: false
+  rescale_learned_sigmas: false
+
+training:
+  lr: 1.0e-4
+  batch_size: 2
+  microbatch: 1
+  epochs: 2000
+  log_interval: 50
+  save_interval: 2000
+  eval_interval: 1000
+  schedule_sampler: uniform
+  weight_decay: 0.0
+  lr_anneal_steps: 0

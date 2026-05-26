@@ -1,0 +1,38 @@
+# 3D Latent Diffusion Model outpainting training
+data:
+  train_root: data/processed/l2-1.485_train
+  val_root: data/processed/l2-1.485_val
+
+output:
+  dir: outputs/experiments/ldm_outpaint
+
+model:
+  vae_checkpoint: outputs/checkpoints/vae_3d/best.pt
+  latent_channels: 8
+  volume_size: 256
+  num_channels: 320
+  num_res_blocks: 4
+  attention_resolutions: "16,8"
+  dropout: 0.0
+  learn_sigma: false
+  use_checkpoint: true
+
+diffusion:
+  steps: 1000
+  noise_schedule: cosine
+  timestep_respacing: ""
+  use_kl: false
+  rescale_timesteps: false
+  rescale_learned_sigmas: false
+
+training:
+  lr: 1.0e-4
+  batch_size: 2
+  microbatch: 1
+  epochs: 2000
+  log_interval: 50
+  save_interval: 2000
+  eval_interval: 1000
+  schedule_sampler: uniform
+  weight_decay: 0.0
+  lr_anneal_steps: 0

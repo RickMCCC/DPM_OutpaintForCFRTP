@@ -3,9 +3,9 @@
 扩展自evaluate_samples.py，添加3D特有的评价方法
 
 使用示例:
-  python scripts/evaluate_3d_samples.py \\
-    --recon_folder "samples_outpaint_3d_train/step_5000" \\
-    --train_data_root "samples_outpaint_3d/size128_mask32_source1.576" \\
+  python scripts/evaluate_3d_samples.py \
+    --recon_folder "samples_outpaint_3d_train/step_5000" \
+    --train_data_root "samples_outpaint_3d/size128_mask32_source1.576" \
     --output_file "evaluation_results.csv"
 """
 
@@ -24,15 +24,9 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 import argparse
 
 
-DEFAULT_RECON_FOLDER = r"C:\Terong\improved-diffusion\scripts\outpaint_3d_checkpoint\mask16_size96_source1.576\step_0"
-DEFAULT_TRAIN_DATA_ROOT = r"C:\Terong\improved-diffusion\samples_outpaint_3d\size96_mask16_source1.576"
+DEFAULT_RECON_FOLDER = None
+DEFAULT_TRAIN_DATA_ROOT = None
 DEFAULT_OUTPUT_FILE = None
-
-"""
-DEFAULT_RECON_FOLDER = r"C:\Terong\improved-diffusion\scripts\outpaint_3d_checkpoint\mask16_size96_source1.576\step_0"
-DEFAULT_TRAIN_DATA_ROOT = r"C:\Terong\improved-diffusion\samples_outpaint_3d\size96_mask16_source1.576"
-DEFAULT_OUTPUT_FILE = None
-"""
 
 
 def generate_output_filename(recon_folder, train_data_root, save_in_folder=True):
@@ -635,9 +629,9 @@ def parse_args():
    python scripts/evaluate_3d_samples.py
 
 2. 自定义参数:
-   python scripts/evaluate_3d_samples.py \\
-     --recon_folder "samples_outpaint_3d_train/step_10000" \\
-     --train_data_root "samples_outpaint_3d/size64_mask16_source1.576" \\
+   python scripts/evaluate_3d_samples.py \
+     --recon_folder "samples_outpaint_3d_train/step_10000" \
+     --train_data_root "samples_outpaint_3d/size64_mask16_source1.576" \
      --output_file "my_results.csv"
 
 默认参数在脚本开头定义，可以通过命令行参数覆盖。
@@ -647,15 +641,15 @@ def parse_args():
     parser.add_argument(
         "--recon_folder",
         type=str,
-        default=DEFAULT_RECON_FOLDER,
-        help=f"生成的3D样本文件夹路径（默认: {DEFAULT_RECON_FOLDER}）"
+        required=True,
+        help="生成的3D样本文件夹路径"
     )
-    
+
     parser.add_argument(
         "--train_data_root",
         type=str,
-        default=DEFAULT_TRAIN_DATA_ROOT,
-        help=f"训练数据根目录（默认: {DEFAULT_TRAIN_DATA_ROOT}），将自动从target子文件夹加载ground truth"
+        required=True,
+        help="训练数据根目录，将自动从target子文件夹加载ground truth"
     )
     
     parser.add_argument(
@@ -805,4 +799,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

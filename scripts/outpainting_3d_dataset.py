@@ -161,4 +161,3 @@ class Outpainting3DTripletDataset(Dataset):
 #     init, mask, target = batch["init"], batch["mask"], batch["target"]
 #     # init/mask/target shape: (B, 1, D, H, W)
 #     # feed to model / training loop
-

@@ -1,146 +1,205 @@
-# improved-diffusion
+# DPM Outpaint for CFRTP
 
-This is the codebase for [Improved Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2102.09672).
+3D outpainting (extrapolation) for CFRTP (Carbon Fiber Reinforced Thermoplastic) XCT volumes using diffusion probabilistic models.
 
-# Usage
+This project trains a latent diffusion model to perform 3D outpainting on XCT volumetric data. Given a central sub-volume, the model generates the surrounding structure to produce a larger complete volume.
 
-This section of the README walks through how to train and sample from a model.
+## Project Structure
+
+```
+DPM_OutpaintForCFRTP/
+  README.md
+  setup.py                        # Package install
+  improved_diffusion/             # Core diffusion model code
+  scripts/                        # Entry-point scripts
+    prepare_outpainting_3d_data.py
+    train_vae_3d.py
+    outpaint_3d_train.py
+    outpaint_3d_train_ldm.py
+    evaluate_3d_samples.py
+    visualize_3d_results.py
+  configs/                        # Experiment configuration files
+    data/
+    train/
+  data/                           # Datasets (git-ignored)
+    raw/
+    processed/
+  outputs/                        # Experiment outputs (git-ignored)
+    checkpoints/
+    samples/
+    visualizations/
+    metrics/
+    logs/
+  archive/                        # Legacy scripts and reference material
+```
 
 ## Installation
 
-Clone this repository and navigate to it in your terminal. Then run:
-
-```
+```bash
 pip install -e .
 ```
 
-This should install the `improved_diffusion` python package that the scripts depend on.
+For additional evaluation dependencies:
+
+```bash
+pip install numpy Pillow scipy opencv-python scikit-image matplotlib lpips
+```
+
+## Data Format
+
+The 3D outpainting dataset uses XCT volumetric data. Each sample consists of three components stored as binary `.npy` files:
+
+- **init**: The known center sub-volume (the "seed" region visible to the model).
+- **target**: The full volume ground truth.
+- **full_mask**: Binary mask indicating which voxels are known (the init region is 1, the surrounding unknown is 0).
+
+The dataset directory should contain numbered subdirectories:
+
+```
+dataset/
+  0/
+    init.npy
+    target.npy
+    full_mask.npy
+  1/
+    init.npy
+    target.npy
+    full_mask.npy
+  ...
+```
 
 ## Preparing Data
 
-The training code reads images from a directory of image files. In the [datasets](datasets) folder, we have provided instructions/scripts for preparing these directories for ImageNet, LSUN bedrooms, and CIFAR-10.
+Slice the original XCT TIFF stack into 3D training samples:
 
-For creating your own dataset, simply dump all of your images into a directory with ".jpg", ".jpeg", or ".png" extensions. If you wish to train a class-conditional model, name the files like "mylabel1_XXX.jpg", "mylabel2_YYY.jpg", etc., so that the data loader knows that "mylabel1" and "mylabel2" are the labels. Subdirectories will automatically be enumerated as well, so the images can be organized into a recursive structure (although the directory names will be ignored, and the underscore prefixes are used as names).
+```bash
+python scripts/prepare_outpainting_3d_data.py \
+  --input_dir data/raw/tiff_stack \
+  --output_dir data/processed/outpaint_l2_1485 \
+  --volume_size 256 \
+  --sub_size 64
+```
 
-The images will automatically be scaled and center-cropped by the data-loading pipeline. Simply pass `--data_dir path/to/images` to the training script, and it will take care of the rest.
+Key options:
+- `--volume_size`: Full volume side length.
+- `--sub_size`: Size of the known center sub-volume (must be less than volume_size).
+- `--feather`: Feathering width for the mask boundary.
 
 ## Training
 
-To train your model, you should first decide some hyperparameters. We will split up our hyperparameters into three groups: model architecture, diffusion process, and training flags. Here are some reasonable defaults for a baseline:
+### 1. Train the 3D VAE
 
-```
-MODEL_FLAGS="--image_size 64 --num_channels 128 --num_res_blocks 3"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule linear"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128"
-```
-
-Here are some changes we experiment with, and how to set them in the flags:
-
- * **Learned sigmas:** add `--learn_sigma True` to `MODEL_FLAGS`
- * **Cosine schedule:** change `--noise_schedule linear` to `--noise_schedule cosine`
- * **Importance-sampled VLB:** add `--use_kl True` to `DIFFUSION_FLAGS` and add `--schedule_sampler loss-second-moment` to  `TRAIN_FLAGS`.
- * **Class-conditional:** add `--class_cond True` to `MODEL_FLAGS`.
-
-Once you have setup your hyper-parameters, you can run an experiment like so:
-
-```
-python scripts/image_train.py --data_dir path/to/images $MODEL_FLAGS $DIFFUSION_FLAGS $TRAIN_FLAGS
-```
-
-You may also want to train in a distributed manner. In this case, run the same command with `mpiexec`:
-
-```
-mpiexec -n $NUM_GPUS python scripts/image_train.py --data_dir path/to/images $MODEL_FLAGS $DIFFUSION_FLAGS $TRAIN_FLAGS
-```
-
-When training in a distributed manner, you must manually divide the `--batch_size` argument by the number of ranks. In lieu of distributed training, you may use `--microbatch 16` (or `--microbatch 1` in extreme memory-limited cases) to reduce memory usage.
-
-The logs and saved models will be written to a logging directory determined by the `OPENAI_LOGDIR` environment variable. If it is not set, then a temporary directory will be created in `/tmp`.
-
-## Sampling
-
-The above training script saves checkpoints to `.pt` files in the logging directory. These checkpoints will have names like `ema_0.9999_200000.pt` and `model200000.pt`. You will likely want to sample from the EMA models, since those produce much better samples.
-
-Once you have a path to your model, you can generate a large batch of samples like so:
-
-```
-python scripts/image_sample.py --model_path /path/to/model.pt $MODEL_FLAGS $DIFFUSION_FLAGS
-```
-
-Again, this will save results to a logging directory. Samples are saved as a large `npz` file, where `arr_0` in the file is a large batch of samples.
-
-Just like for training, you can run `image_sample.py` through MPI to use multiple GPUs and machines.
-
-You can change the number of sampling steps using the `--timestep_respacing` argument. For example, `--timestep_respacing 250` uses 250 steps to sample. Passing `--timestep_respacing ddim250` is similar, but uses the uniform stride from the [DDIM paper](https://arxiv.org/abs/2010.02502) rather than our stride.
-
-To sample using [DDIM](https://arxiv.org/abs/2010.02502), pass `--use_ddim True`.
-
-## Models and Hyperparameters
-
-This section includes model checkpoints and run flags for the main models in the paper.
-
-Note that the batch sizes are specified for single-GPU training, even though most of these runs will not naturally fit on a single GPU. To address this, either set `--microbatch` to a small value (e.g. 4) to train on one GPU, or run with MPI and divide `--batch_size` by the number of GPUs.
-
-Unconditional ImageNet-64 with our `L_hybrid` objective and cosine noise schedule [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/imagenet64_uncond_100M_1500K.pt)]:
+The VAE compresses 3D volumes into a compact latent representation for efficient diffusion training:
 
 ```bash
-MODEL_FLAGS="--image_size 64 --num_channels 128 --num_res_blocks 3 --learn_sigma True"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule cosine"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128"
+python scripts/train_vae_3d.py \
+  --data_dir data/processed/l2-1.485_train \
+  --val_root data/processed/l2-1.485_val \
+  --output_dir outputs/checkpoints/vae_3d \
+  --latent_channels 8 \
+  --vae_hidden_channels 64 \
+  --vae_num_res_blocks 3 \
+  --vae_num_downsamples 2 \
+  --batch_size 4 \
+  --epochs 200 \
+  --lr 1e-4 \
+  --kl_weight 0.001 \
+  --perceptual_weight 0.1
 ```
 
-Unconditional CIFAR-10 with our `L_hybrid` objective and cosine noise schedule [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/cifar10_uncond_50M_500K.pt)]:
+### 2. Train the 3D Outpainting Latent Diffusion Model
+
+With a trained VAE, train the latent diffusion model for outpainting:
 
 ```bash
-MODEL_FLAGS="--image_size 32 --num_channels 128 --num_res_blocks 3 --learn_sigma True --dropout 0.3"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule cosine"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128"
+python scripts/outpaint_3d_train_ldm.py \
+  --train_root data/processed/l2-1.485_train \
+  --val_root data/processed/l2-1.485_val \
+  --out_dir_base outputs/experiments/ldm_outpaint \
+  --vae_checkpoint outputs/checkpoints/vae_3d/best.pt \
+  --batch_size 2 \
+  --epochs 2000 \
+  --lr 1e-4 \
+  --volume_size 256 \
+  --num_channels 320 \
+  --num_res_blocks 4
 ```
 
-Class-conditional ImageNet-64 model (270M parameters, trained for 250K iterations) [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/imagenet64_cond_270M_250K.pt)]:
+### 3. Train the 3D Outpainting Voxel Model (Direct)
+
+Train a diffusion model directly on voxel data (no VAE compression):
 
 ```bash
-MODEL_FLAGS="--image_size 64 --num_channels 192 --num_res_blocks 3 --learn_sigma True --class_cond True"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule cosine --rescale_learned_sigmas False --rescale_timesteps False"
-TRAIN_FLAGS="--lr 3e-4 --batch_size 2048"
+python scripts/outpaint_3d_train.py \
+  --train_root data/processed/l2-1.485_train \
+  --val_root data/processed/l2-1.485_val \
+  --out_dir_base outputs/experiments/voxel_outpaint \
+  --batch_size 2 \
+  --epochs 2000 \
+  --lr 1e-4 \
+  --volume_size 256 \
+  --num_channels 128 \
+  --num_res_blocks 3 \
+  --diffusion_steps 1000 \
+  --noise_schedule cosine
 ```
 
-Upsampling 256x256 model (280M parameters, trained for 500K iterations) [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/upsample_cond_500K.pt)]:
+## Evaluation
+
+Compute image quality metrics (MSE, PSNR, SSIM) on generated volumes:
 
 ```bash
-MODEL_FLAGS="--num_channels 192 --num_res_blocks 2 --learn_sigma True --class_cond True"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule linear --rescale_learned_sigmas False --rescale_timesteps False"
-TRAIN_FLAGS="--lr 3e-4 --batch_size 256"
+python scripts/evaluate_3d_samples.py \
+  --recon_folder outputs/samples/my_experiment \
+  --train_data_root data/processed/l2-1.485_val \
+  --output_file outputs/metrics/my_experiment_metrics.csv
 ```
 
-LSUN bedroom model (lr=1e-4) [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/lsun_uncond_100M_1200K_bs128.pt)]:
+## Visualization
+
+Generate 2D slice plots and 3D voxel/surface visualizations from model outputs:
 
 ```bash
-MODEL_FLAGS="--image_size 256 --num_channels 128 --num_res_blocks 2 --num_heads 1 --learn_sigma True --use_scale_shift_norm False --attention_resolutions 16"
-DIFFUSION_FLAGS="--diffusion_steps 1000 --noise_schedule linear --rescale_learned_sigmas False --rescale_timesteps False"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128"
+# 2D slices with adaptive thresholding
+python scripts/visualize_3d_results.py \
+  --input_folder outputs/samples/my_experiment \
+  --output_dir outputs/visualizations/my_experiment \
+  --visualize_2d_slices \
+  --threshold_method adaptive_percentile \
+  --percentile 75
+
+# 3D voxel rendering
+python scripts/visualize_3d_results.py \
+  --input_folder outputs/samples/my_experiment \
+  --output_dir outputs/visualizations/my_experiment \
+  --visualize_3d_voxels \
+  --threshold_method absolute \
+  --fiber_threshold 128
+
+# All visualizations
+python scripts/visualize_3d_results.py \
+  --input_folder outputs/samples/my_experiment \
+  --output_dir outputs/visualizations/my_experiment \
+  --all
 ```
 
-LSUN bedroom model (lr=2e-5) [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/lsun_uncond_100M_2400K_bs64.pt)]:
+## Experiment Management
 
-```bash
-MODEL_FLAGS="--image_size 256 --num_channels 128 --num_res_blocks 2 --num_heads 1 --learn_sigma True --use_scale_shift_norm False --attention_resolutions 16"
-DIFFUSION_FLAGS="--diffusion_steps 1000 --noise_schedule linear --rescale_learned_sigmas False --rescale_timesteps False --use_scale_shift_norm False"
-TRAIN_FLAGS="--lr 2e-5 --batch_size 128"
+Each experiment should produce outputs under its own directory:
+
+```
+outputs/experiments/
+  2026-05-26_ldm_l2-1485_mask64/
+    config.yaml
+    checkpoints/
+    samples/
+    metrics/
+    logs/
 ```
 
-Unconditional ImageNet-64 with the `L_vlb` objective and cosine noise schedule [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/imagenet64_uncond_vlb_100M_1500K.pt)]:
+## Notes
 
-```bash
-MODEL_FLAGS="--image_size 64 --num_channels 128 --num_res_blocks 3 --learn_sigma True"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule cosine --use_kl True"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128 --schedule_sampler loss-second-moment"
-```
-
-Unconditional CIFAR-10 with the `L_vlb` objective and cosine noise schedule [[checkpoint](https://openaipublic.blob.core.windows.net/diffusion/march-2021/cifar10_uncond_vlb_50M_500K.pt)]:
-
-```bash
-MODEL_FLAGS="--image_size 32 --num_channels 128 --num_res_blocks 3 --learn_sigma True --dropout 0.3"
-DIFFUSION_FLAGS="--diffusion_steps 4000 --noise_schedule cosine --use_kl True"
-TRAIN_FLAGS="--lr 1e-4 --batch_size 128 --schedule_sampler loss-second-moment"
-```
+- Checkpoints, generated samples, and metrics are in `outputs/` (git-ignored).
+- Raw and processed datasets live under `data/` (git-ignored).
+- Legacy 2D diffusion scripts and the upstream `improved-diffusion` reference copy are in `archive/`.
+- Hard-coded paths in scripts should be gradually migrated to config files under `configs/`.

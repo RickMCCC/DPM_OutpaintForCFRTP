@@ -1,5 +1,4 @@
 .DS_Store
-__pycache__/
 
 # Virtual environment
 .venv/
@@ -14,3 +13,42 @@ __pycache__/
 
 # IDE
 .idea/
+.vscode/
+.claude/
+
+# Logs
+*.log
+
+# Local data
+data/raw/
+data/processed/
+improved_diffusion/training_data/
+
+# Generated outputs
+outputs/
+runs/
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+
+# Generated image folders
+*_pngs/
+
+# Local archives
+*.zip
+*.tar.gz
+*.rar
+
+# Python packaging
+*.egg-info/
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+.env.local

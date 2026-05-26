@@ -473,7 +473,8 @@ class UNetModel(nn.Module):
         ), "must specify y if and only if the model is class-conditional"
 
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        time_embed_dtype = next(self.time_embed.parameters()).dtype
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels).to(time_embed_dtype))
 
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
@@ -487,7 +488,8 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
-        h = h.type(x.dtype)
+        out_dtype = next(self.out.parameters()).dtype
+        h = h.type(out_dtype)
         return self.out(h)
 
     def get_feature_vectors(self, x, timesteps, y=None):
@@ -504,7 +506,8 @@ class UNetModel(nn.Module):
                  - 'up': a list of hidden state tensors from upsampling.
         """
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        time_embed_dtype = next(self.time_embed.parameters()).dtype
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels).to(time_embed_dtype))
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)

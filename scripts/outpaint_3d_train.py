@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader
 
 # 获取当前脚本的目录（script文件夹）
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 获取项目根目录（improved-diffusion文件夹）
+# 获取项目根目录
 project_root = os.path.dirname(current_dir)
 # 将项目根目录添加到Python路径
 sys.path.insert(0, project_root)
@@ -62,7 +62,9 @@ class CondUNet(th.nn.Module):
 
 def create_argparser():
     defaults = dict(
-        train_root="samples_outpaint_3d/size96_mask32_sourcenonwoven",
+        # 训练/验证数据根目录（与 prepare_outpainting_3d_data.py 输出保持一致）
+        train_root="outpaint_3dnew/l2-1.485_train/size256_mask64_sourcel2-1.485",
+        val_root="outpaint_3dnew/l2-1.485_val/size256_mask64_sourcel2-1.485",
         out_dir_base="samples_outpaint_3d",
         source_tag="",
         batch_size=1,  # Can use 2 for 64³
@@ -78,12 +80,12 @@ def create_argparser():
         lr_anneal_steps=0,
         epochs=140,
         num_workers=0,
-        volume_size=96,  # 3D volume size (D=H=W) - 64³
+        volume_size=256,  # 3D volume size (D=H=W) - 64³
     )
     # pull model/diffusion defaults and adjust in_channels
     md = model_and_diffusion_defaults()
     md.update(dict(
-        image_size=96,  # For 3D, 64³
+        image_size=256,  # For 3D, 64³
         num_channels=32,  # Reasonable for 64³
         num_res_blocks=1,
         diffusion_steps=2000,
@@ -338,8 +340,8 @@ def main():
                             spec.loader.exec_module(eval_module)
                             
                             # Generate single CSV file name (without step info, all steps will append to this file)
-                            train_name = os.path.basename(os.path.normpath(args.train_root))
-                            eval_output_file = f"evaluation_3doutpaint_results_{train_name}.csv"
+                            eval_name = os.path.basename(os.path.normpath(args.val_root))
+                            eval_output_file = f"evaluation_3doutpaint_results_{eval_name}.csv"
                             eval_output_path = os.path.join(current_dir, args.samples_dir, eval_output_file)
                             
                             # Ensure directory exists
@@ -348,7 +350,7 @@ def main():
                             # Run evaluation with step info (will append to CSV)
                             eval_results = eval_module.run_evaluation(
                                 recon_folder=out_dir,
-                                train_data_root=args.train_root,
+                                train_data_root=args.val_root,
                                 output_file=eval_output_path,
                                 step=global_step
                             )
@@ -381,4 +383,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

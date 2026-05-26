@@ -3,10 +3,10 @@
 用于可视化复合材料XCT扫描结果，区分纤维和树脂部分
 
 使用方法:
-  python scripts/visualize_3d_results.py \\
-    --input_folder "samples_outpaint_3d_train/step_5000" \\
-    --output_dir "visualizations" \\
-    --fiber_threshold 128 \\
+  python scripts/visualize_3d_results.py \
+    --input_folder "samples_outpaint_3d_train/step_5000" \
+    --output_dir "visualizations" \
+    --fiber_threshold 128 \
     --sample_index 0
 """
 
@@ -68,8 +68,8 @@ def get_low_saturation_colors():
     
     return low_sat_colors
 
-DEFAULT_INPUT_FOLDER = r"C:\Terong\improved-diffusion\scripts\outpaint_3d_checkpoint\mask32_size96_source1.576\step_25000"
-DEFAULT_OUTPUT_DIR = r"C:\Terong\improved-diffusion\scripts\visualizations"
+DEFAULT_INPUT_FOLDER = None
+DEFAULT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "visualizations")
 
 DEFAULT_FIBER_THRESHOLD = 128  # 灰度阈值（仅在threshold_method='absolute'时使用）
 DEFAULT_SAMPLE_INDEX = 0  # 要可视化的样本索引
@@ -547,18 +547,18 @@ def parse_args():
    python scripts/visualize_3d_results.py
 
 2. 指定输入文件夹和阈值:
-   python scripts/visualize_3d_results.py \\
-     --input_folder "samples_outpaint_3d_train/step_5000" \\
-     --fiber_threshold 150 \\
+   python scripts/visualize_3d_results.py \
+     --input_folder "samples_outpaint_3d_train/step_5000" \
+     --fiber_threshold 150 \
      --sample_index 0
 
 3. 生成所有可视化:
-   python scripts/visualize_3d_results.py \\
-     --input_folder "samples_outpaint_3d_train/step_5000" \\
-     --output_dir "visualizations" \\
-     --fiber_threshold 128 \\
-     --visualize_3d_voxels \\
-     --visualize_3d_surface \\
+   python scripts/visualize_3d_results.py \
+     --input_folder "samples_outpaint_3d_train/step_5000" \
+     --output_dir "visualizations" \
+     --fiber_threshold 128 \
+     --visualize_3d_voxels \
+     --visualize_3d_surface \
      --visualize_2d_slices
         """
     )
@@ -566,8 +566,8 @@ def parse_args():
     parser.add_argument(
         "--input_folder",
         type=str,
-        default=DEFAULT_INPUT_FOLDER,
-        help=f"输入文件夹路径（默认: {DEFAULT_INPUT_FOLDER}）"
+        required=True,
+        help="输入文件夹路径（包含生成的样本数据）"
     )
     
     parser.add_argument(

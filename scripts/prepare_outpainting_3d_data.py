@@ -35,7 +35,7 @@ from tqdm import tqdm
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare 3D outpainting dataset")
-    parser.add_argument("--input_dir", type=str, help="顺序 .tif 切片所在目录")
+    parser.add_argument("--input_dir", type=str, required=True, help="顺序 .tif 切片所在目录")
     parser.add_argument("--output_dir", type=str, help="输出数据根目录，默认samples_outpaint_3d")
     parser.add_argument("--volume_size", type=int, help="立方体画布边长，默认128")
     parser.add_argument("--stride_z", type=int, help="沿Z的步长，默认与volume_size相同")
@@ -44,16 +44,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sub_size", type=int, help="角落子块边长（已知区域），默认32")
     parser.add_argument("--feather", type=int, help="mask边缘羽化半径(体素)，默认0")
     parser.add_argument("--limit_blocks", type=int, help="调试用：最多处理多少个立方体，默认不限制")
+    parser.add_argument("--z_start", type=int, help="起始Z坐标", default=0)
+    parser.add_argument("--y_start", type=int, help="起始Y坐标", default=0)
+    parser.add_argument("--x_start", type=int, help="起始X坐标", default=0)
+    parser.add_argument("--z_end", type=int, help="结束Z坐标", default=None)
+    parser.add_argument("--y_end", type=int, help="结束Y坐标", default=None)
+    parser.add_argument("--x_end", type=int, help="结束X坐标", default=None)
+    parser.add_argument("--exclude_z_start", type=int, help="排除区域起始Z坐标", default=None)
+    parser.add_argument("--exclude_y_start", type=int, help="排除区域起始Y坐标", default=None)
+    parser.add_argument("--exclude_x_start", type=int, help="排除区域起始X坐标", default=None)
+    parser.add_argument("--exclude_z_end", type=int, help="排除区域结束Z坐标", default=None)
+    parser.add_argument("--exclude_y_end", type=int, help="排除区域结束Y坐标", default=None)
+    parser.add_argument("--exclude_x_end", type=int, help="排除区域结束X坐标", default=None)
     parser.set_defaults(
-        input_dir="C:/Terong/CFRTP XCT/nonwoven",
-        output_dir="samples_outpaint_3d",
-        volume_size=96,
-        stride_z=None,
-        stride_y=None,
-        stride_x=None,
-        sub_size=32,
+        output_dir="data/processed/outpaint_3d",
+        volume_size=256,
+        stride_z=100,
+        stride_y=100,
+        stride_x=100,
+        sub_size=64,
         feather=0,
         limit_blocks=None,
+        z_start=0,
+        y_start=0,
+        x_start=0,
+        z_end=None,
+        y_end=None,
+        x_end=None,
+        exclude_z_start=None,
+        exclude_y_start=None,
+        exclude_x_start=None,
+        exclude_z_end=None,
+        exclude_y_end=None,
+        exclude_x_end=None,
     )
     return parser.parse_args()
 
@@ -188,10 +211,44 @@ def main() -> None:
     depth, height, width = volume.shape
     print(f"体数据尺寸: (Z={depth}, Y={height}, X={width})")
 
-    if any(size < volume_size for size in (depth, height, width)):
+    # 裁剪指定区域
+    z_start = args.z_start
+    y_start = args.y_start
+    x_start = args.x_start
+    z_end = args.z_end or depth
+    y_end = args.y_end or height
+    x_end = args.x_end or width
+
+    # 确保区域大小足够
+    if z_end - z_start < volume_size:
+        raise ValueError(f"Z区域大小不足：{z_end - z_start} < {volume_size}")
+    if y_end - y_start < volume_size:
+        raise ValueError(f"Y区域大小不足：{y_end - y_start} < {volume_size}")
+    if x_end - x_start < volume_size:
+        raise ValueError(f"X区域大小不足：{x_end - x_start} < {volume_size}")
+
+    # 裁剪数据
+    cropped_volume = volume[z_start:z_end, y_start:y_end, x_start:x_end]
+    print(f"裁剪后体数据尺寸: (Z={cropped_volume.shape[0]}, Y={cropped_volume.shape[1]}, X={cropped_volume.shape[2]})")
+
+    if any(size < volume_size for size in cropped_volume.shape):
         raise ValueError(
-            f"体尺寸 {volume.shape} 小于 volume_size {volume_size}，无法裁剪立方体"
+            f"裁剪后体尺寸 {cropped_volume.shape} 小于 volume_size {volume_size}，无法裁剪立方体"
         )
+
+    # 获取排除区域参数
+    exclude_z_start = args.exclude_z_start
+    exclude_y_start = args.exclude_y_start
+    exclude_x_start = args.exclude_x_start
+    exclude_z_end = args.exclude_z_end
+    exclude_y_end = args.exclude_y_end
+    exclude_x_end = args.exclude_x_end
+
+    # 检查排除区域参数是否完整
+    exclude_region = all([exclude_z_start is not None, exclude_y_start is not None, exclude_x_start is not None,
+                        exclude_z_end is not None, exclude_y_end is not None, exclude_x_end is not None])
+    if exclude_region:
+        print(f"排除区域: (Z={exclude_z_start}-{exclude_z_end}, Y={exclude_y_start}-{exclude_y_end}, X={exclude_x_start}-{exclude_x_end})")
 
     if sub_size > volume_size:
         raise ValueError("sub_size 必须不大于 volume_size")
@@ -223,18 +280,38 @@ def main() -> None:
     total_triplets = 0
 
     for (z0, y0, x0), block in tqdm(
-        iter_blocks(volume, volume_size, stride_z, stride_y, stride_x),
+        iter_blocks(cropped_volume, volume_size, stride_z, stride_y, stride_x),
         total=math.prod(
             [
-                1 + (depth - volume_size) // stride_z,
-                1 + (height - volume_size) // stride_y,
-                1 + (width - volume_size) // stride_x,
+                1 + (cropped_volume.shape[0] - volume_size) // stride_z,
+                1 + (cropped_volume.shape[1] - volume_size) // stride_y,
+                1 + (cropped_volume.shape[2] - volume_size) // stride_x,
             ]
         ),
         desc="裁剪立方体",
     ):
+        # 计算实际坐标（相对于原始体积）
+        actual_z0 = z_start + z0
+        actual_y0 = y_start + y0
+        actual_x0 = x_start + x0
+        actual_z1 = actual_z0 + volume_size
+        actual_y1 = actual_y0 + volume_size
+        actual_x1 = actual_x0 + volume_size
+        
+        # 检查是否与排除区域重叠
+        if exclude_region:
+            # 检查是否有重叠
+            overlap = not (
+                actual_z1 <= exclude_z_start or actual_z0 >= exclude_z_end or
+                actual_y1 <= exclude_y_start or actual_y0 >= exclude_y_end or
+                actual_x1 <= exclude_x_start or actual_x0 >= exclude_x_end
+            )
+            if overlap:
+                # 跳过与排除区域重叠的块
+                continue
+        
         total_blocks += 1
-        block_id = f"z{z0:04d}_y{y0:04d}_x{x0:04d}"
+        block_id = f"z{actual_z0:04d}_y{actual_y0:04d}_x{actual_x0:04d}"
 
         # 为每个立方体生成一个三元组，包含所有8个顶角子块（类似2D版本的outpaint_sample.py）
         # init: 黑色背景，粘贴所有8个角落的子块
@@ -285,5 +362,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
