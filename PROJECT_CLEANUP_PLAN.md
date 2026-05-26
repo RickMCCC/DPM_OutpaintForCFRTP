@@ -171,7 +171,7 @@ Then document that it is reference-only and not used by current training scripts
 Several scripts contain hard-coded local paths such as / 多个脚本包含硬编码的本地路径，例如：
 
 ```text
-F:\CFRTP XCT\nonwoven
+Z:\CFRTP XCT\nonwoven
 C:\Terong\improved-diffusion\...
 outpaint_3dnew/l2-1.485_train/size256_mask64_sourcel2-1.485
 ```

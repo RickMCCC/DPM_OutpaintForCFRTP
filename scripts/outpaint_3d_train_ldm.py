@@ -189,8 +189,7 @@ def main():
             basename = f"{parts[1]}_{parts[0]}_{parts[2]}"
             
     args.output_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "outpaint_3d_checkpoint",
+        "Z:/Outpaint_Checkpoint",
         f"{basename}_ds{args.vae_num_downsamples}_ch{args.latent_channels}_res{args.vae_num_res_blocks}",
         "ckpt"
     )

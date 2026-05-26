@@ -1,0 +1,25 @@
+# 数据路径与预处理配置模板
+# 复制为 data.yaml 并修改 data_root 指向你的数据目录
+
+data_root: "Z:/CFRTP XCT"   # 修改为你的数据根目录
+
+datasets:
+  "1.576":
+    raw_dir: "Z:/CFRTP XCT/1.576"
+    processed_dir: "Z:/CFRTP XCT/processed/1.576"
+  l2-1.485:
+    raw_dir: "Z:/CFRTP XCT/l2-1.485"
+    processed_dir: "Z:/CFRTP XCT/processed/l2-1.485"
+  nonwoven:
+    raw_dir: "Z:/CFRTP XCT/nonwoven"
+    processed_dir: "Z:/CFRTP XCT/processed/nonwoven"
+
+default_dataset: l2-1.485
+
+preprocessing:
+  volume_size: 256
+  sub_size: 64
+  stride_z: 100
+  stride_y: 100
+  stride_x: 100
+  feather: 0

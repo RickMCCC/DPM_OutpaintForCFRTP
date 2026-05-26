@@ -16,6 +16,9 @@ __pycache__/
 .vscode/
 .claude/
 
+# Local config (user-specific paths)
+configs/data.yaml
+
 # Reference archives (large, not needed in version control)
 archive/improved-diffusion-upstream/
 

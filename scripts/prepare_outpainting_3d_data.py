@@ -16,7 +16,7 @@ naming convention similar to prepare_outpainting_data.py.
 
 Example:
   python scripts/prepare_outpainting_3d_data.py \
-    --input_dir "C:/Terong/CFRTP XCT/1.576" \
+    --input_dir "Z:/CFRTP XCT/1.576" \
     --output_dir "samples_outpaint_3d" \
     --volume_size 128 --sub_size 32
 """
