@@ -396,6 +396,9 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        known_latent=None,
+        known_mask=None,
+        known_noise=None,
     ):
         """
         Generate samples from the model.
@@ -424,6 +427,9 @@ class GaussianDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
+            known_latent=known_latent,
+            known_mask=known_mask,
+            known_noise=known_noise,
         ):
             final = sample
         return final["sample"]
@@ -438,6 +444,9 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        known_latent=None,
+        known_mask=None,
+        known_noise=None,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -454,6 +463,27 @@ class GaussianDiffusion:
             img = noise
         else:
             img = th.randn(*shape, device=device)
+        if (known_latent is None) != (known_mask is None):
+            raise ValueError("known_latent and known_mask must be provided together")
+        if known_latent is not None:
+            known_latent = known_latent.to(device=device, dtype=img.dtype)
+            known_mask = known_mask.to(device=device, dtype=img.dtype)
+            if known_latent.shape != img.shape:
+                raise ValueError(
+                    f"known_latent shape {tuple(known_latent.shape)} does not match {tuple(img.shape)}"
+                )
+            if known_mask.shape[1] == 1 and img.shape[1] != 1:
+                known_mask = known_mask.expand_as(img)
+            elif known_mask.shape != img.shape:
+                raise ValueError(
+                    f"known_mask shape {tuple(known_mask.shape)} is incompatible with {tuple(img.shape)}"
+                )
+            if known_noise is None:
+                known_noise = th.randn_like(known_latent)
+            else:
+                known_noise = known_noise.to(device=device, dtype=img.dtype)
+                if known_noise.shape != known_latent.shape:
+                    raise ValueError("known_noise must have the same shape as known_latent")
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -465,6 +495,9 @@ class GaussianDiffusion:
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
+                if known_latent is not None:
+                    known_xt = self.q_sample(known_latent, t, noise=known_noise)
+                    img = known_mask * known_xt + (1.0 - known_mask) * img
                 out = self.p_sample(
                     model,
                     img,
@@ -674,7 +707,21 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses(
+        self,
+        model,
+        x_start,
+        t,
+        model_kwargs=None,
+        noise=None,
+        loss_mask=None,
+        boundary_mask=None,
+        loss_known_weight=1.0,
+        loss_unknown_weight=1.0,
+        loss_boundary_weight=0.0,
+        normalize_region_weights=True,
+        return_pred_xstart=False,
+    ):
         """
         Compute training losses for a single timestep.
 
@@ -684,6 +731,9 @@ class GaussianDiffusion:
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :param noise: if specified, the specific Gaussian noise to try to remove.
+        :param loss_mask: optional [N x 1 x ...] tensor where 1 marks unknown
+            outpainting regions. When provided, the MSE term is spatially
+            weighted using loss_unknown_weight and loss_known_weight.
         :return: a dict with the key "loss" containing a tensor of shape [N].
                  Some mean or variance settings may also have other keys.
         """
@@ -739,7 +789,68 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape
-            terms["mse"] = mean_flat((target - model_output) ** 2)
+            if return_pred_xstart:
+                if self.model_mean_type == ModelMeanType.EPSILON:
+                    terms["pred_xstart"] = self._predict_xstart_from_eps(
+                        x_t=x_t, t=t, eps=model_output
+                    )
+                elif self.model_mean_type == ModelMeanType.START_X:
+                    terms["pred_xstart"] = model_output
+                elif self.model_mean_type == ModelMeanType.PREVIOUS_X:
+                    terms["pred_xstart"] = self._predict_xstart_from_xprev(
+                        x_t=x_t, t=t, xprev=model_output
+                    )
+                else:
+                    raise NotImplementedError(self.model_mean_type)
+            squared_error = (target - model_output) ** 2
+            if loss_mask is not None:
+                mask = loss_mask.to(device=squared_error.device, dtype=squared_error.dtype)
+                if mask.shape[1] == 1 and squared_error.shape[1] != 1:
+                    mask = mask.expand_as(squared_error)
+                elif mask.shape != squared_error.shape:
+                    raise ValueError(
+                        f"loss_mask shape {tuple(mask.shape)} is incompatible with "
+                        f"squared error shape {tuple(squared_error.shape)}"
+                    )
+                reduce_dims = tuple(range(1, squared_error.ndim))
+                unknown_count = mask.sum(dim=reduce_dims).clamp_min(1e-8)
+                known = 1.0 - mask
+                known_count = known.sum(dim=reduce_dims).clamp_min(1e-8)
+                terms["loss_unknown"] = (
+                    squared_error * mask
+                ).sum(dim=reduce_dims) / unknown_count
+                terms["loss_known"] = (
+                    squared_error * known
+                ).sum(dim=reduce_dims) / known_count
+                weighted_region_loss = (
+                    float(loss_unknown_weight) * terms["loss_unknown"]
+                    + float(loss_known_weight) * terms["loss_known"]
+                )
+                if normalize_region_weights:
+                    region_weight_sum = max(
+                        float(loss_unknown_weight) + float(loss_known_weight), 1e-8
+                    )
+                    weighted_region_loss = weighted_region_loss / region_weight_sum
+                terms["mse"] = weighted_region_loss
+
+                if boundary_mask is not None and float(loss_boundary_weight) != 0.0:
+                    boundary = boundary_mask.to(
+                        device=squared_error.device, dtype=squared_error.dtype
+                    )
+                    if boundary.shape[1] == 1 and squared_error.shape[1] != 1:
+                        boundary = boundary.expand_as(squared_error)
+                    elif boundary.shape != squared_error.shape:
+                        raise ValueError(
+                            f"boundary_mask shape {tuple(boundary.shape)} is incompatible with "
+                            f"squared error shape {tuple(squared_error.shape)}"
+                        )
+                    boundary_count = boundary.sum(dim=reduce_dims).clamp_min(1e-8)
+                    terms["loss_boundary"] = (
+                        squared_error * boundary
+                    ).sum(dim=reduce_dims) / boundary_count
+                    terms["mse"] = terms["mse"] + float(loss_boundary_weight) * terms["loss_boundary"]
+            else:
+                terms["mse"] = mean_flat(squared_error)
             if "vb" in terms:
                 terms["loss"] = terms["mse"] + terms["vb"]
             else:

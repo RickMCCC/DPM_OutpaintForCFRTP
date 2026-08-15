@@ -1,0 +1,80 @@
+# Scratch 3D LDM training with a single-process guidance curriculum.
+data:
+  train_root: data/processed/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_root: data/processed/l2-1.485_val/size256_mask64_sourcel2-1.485
+  train_cache_dir: data/cache/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_cache_dir: data/cache/l2-1.485_val/size256_mask64_sourcel2-1.485
+
+output:
+  dir: Z:/Outpaint_Checkpoint/DPM_OutpaintForCFRTP/outputs/checkpoints/outpaint_3d
+
+model:
+  latent_channels: 8
+  volume_size: 256
+  num_channels: 32
+  num_res_blocks: 2
+  use_multiscale_context: true
+  use_structure_guidance: true
+  structure_window: 5
+  structure_propagation_latent: 2
+  control_gate_scale: 0.9
+  attention_resolutions: ""
+  dropout: 0.0
+  learn_sigma: true
+  use_checkpoint: true
+  vae_hidden_channels: 64
+  vae_num_res_blocks: 2
+  vae_num_downsamples: 2
+
+diffusion:
+  steps: 1000
+  noise_schedule: cosine
+  timestep_respacing: ""
+  use_kl: false
+  rescale_timesteps: false
+  rescale_learned_sigmas: false
+
+training:
+  scratch_curriculum: true
+  curriculum_base_steps: 10000
+  curriculum_context_steps: 10000
+  curriculum_structure_steps: 20000
+  curriculum_context_gate_scale: 0.3
+  curriculum_boundary_start: 5000
+  curriculum_boundary_ramp_steps: 5000
+  curriculum_voxel_start: 10000
+  curriculum_voxel_ramp_steps: 5000
+  lr: 1.0e-4
+  backbone_lr: 1.0e-4
+  freeze_backbone_steps: 0
+  min_lr: 2.0e-5
+  lr_warmup_steps: 500
+  training_steps: 150001
+  training_seed: 20260714
+  ema_rate: 0.9999
+  batch_size: 1
+  log_interval: 10
+  save_interval: 2000
+  schedule_sampler: uniform
+  weight_decay: 0.0
+  lr_anneal_steps: 0
+  crop_size: 256
+  eval_crop_size: 256
+  eval_num_samples: 2
+  loss_known_weight: 0.1
+  loss_unknown_weight: 1.0
+  loss_boundary_weight: 0.5
+  normalize_region_weights: false
+  voxel_boundary_width: 12
+  voxel_boundary_max_timestep: 250
+  voxel_intensity_weight: 0.5
+  voxel_normal_gradient_weight: 0.25
+  voxel_structure_weight: 0.1
+  smooth_voxel_timestep_weight: true
+  structure_tensor_window: 5
+  augment_flip: true
+  allow_spatial_overlap: false
+  latent_stats_max_samples: 0
+  latent_quantile_low: 0.001
+  latent_quantile_high: 0.999
+  latent_quantile_max_vectors: 1000000

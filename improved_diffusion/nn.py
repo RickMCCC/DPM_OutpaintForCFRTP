@@ -161,7 +161,7 @@ def checkpoint(func, inputs, params, flag):
     :param flag: if False, disable gradient checkpointing.
     """
     if flag:
-        args = tuple(inputs) + tuple(params)
+        args = tuple(inputs) + tuple(parameter for parameter in params if parameter.requires_grad)
         return CheckpointFunction.apply(func, len(inputs), *args)
     else:
         return func(*inputs)

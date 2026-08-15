@@ -35,13 +35,15 @@ class TimestepBlock(nn.Module):
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     """
     A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
+    support it as an extra input, and context tensors to ContextBlock layers.
     """
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, context=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
+            elif isinstance(layer, ContextBlock):
+                x = layer(x, context)
             else:
                 x = layer(x)
         return x
@@ -53,8 +55,7 @@ class Upsample(nn.Module):
 
     :param channels: channels in the inputs and outputs.
     :param use_conv: a bool determining if a convolution is applied.
-    :param dims: determines if the signal is 1D, 2D, or 3D. If 3D, then
-                 upsampling occurs in the inner-two dimensions.
+    :param dims: determines if the signal is 1D, 2D, or 3D.
     """
 
     def __init__(self, channels, use_conv, dims=2):
@@ -67,12 +68,7 @@ class Upsample(nn.Module):
 
     def forward(self, x):
         assert x.shape[1] == self.channels
-        if self.dims == 3:
-            x = F.interpolate(
-                x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
-            )
-        else:
-            x = F.interpolate(x, scale_factor=2, mode="nearest")
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -84,8 +80,7 @@ class Downsample(nn.Module):
 
     :param channels: channels in the inputs and outputs.
     :param use_conv: a bool determining if a convolution is applied.
-    :param dims: determines if the signal is 1D, 2D, or 3D. If 3D, then
-                 downsampling occurs in the inner-two dimensions.
+    :param dims: determines if the signal is 1D, 2D, or 3D.
     """
 
     def __init__(self, channels, use_conv, dims=2):
@@ -93,7 +88,7 @@ class Downsample(nn.Module):
         self.channels = channels
         self.use_conv = use_conv
         self.dims = dims
-        stride = 2 if dims != 3 else (1, 2, 2)
+        stride = 2
         if use_conv:
             self.op = conv_nd(dims, channels, channels, 3, stride=stride, padding=1)
         else:
@@ -275,6 +270,62 @@ class QKVAttention(nn.Module):
         model.total_ops += th.DoubleTensor([matmul_ops])
 
 
+class ContextBlock(nn.Module):
+    """Marker class: layers that consume cross-attention context."""
+
+    def forward(self, x, context):
+        raise NotImplementedError
+
+
+class CrossAttentionBlock(ContextBlock):
+    """
+    Cross-attention: query from UNet features, key/value from an encoded
+    condition (e.g. z_init + mask).  All operations treat the input as 1D
+    token sequences internally.
+    """
+
+    def __init__(self, channels, context_channels, num_heads=1, use_checkpoint=False):
+        super().__init__()
+        self.channels = channels
+        self.num_heads = num_heads
+        self.use_checkpoint = use_checkpoint
+
+        self.norm = normalization(channels)
+        self.q_proj = conv_nd(1, channels, channels, 1)
+        self.kv_proj = conv_nd(1, context_channels, channels * 2, 1)
+        self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
+
+    def forward(self, x, context):
+        return checkpoint(
+            self._forward, (x, context), self.parameters(), self.use_checkpoint
+        )
+
+    def _forward(self, x, context):
+        b, c, *spatial = x.shape
+        x_flat = x.reshape(b, c, -1)
+        ctx_flat = context.reshape(b, context.shape[1], -1)
+
+        q = self.q_proj(self.norm(x_flat))
+        kv = self.kv_proj(ctx_flat)
+        k, v = kv.chunk(2, dim=1)
+
+        num_heads = self.num_heads
+        head_dim = q.shape[1] // num_heads
+
+        q = q.reshape(b * num_heads, head_dim, -1)
+        k = k.reshape(b * num_heads, head_dim, -1)
+        v = v.reshape(b * num_heads, head_dim, -1)
+
+        scale = 1 / math.sqrt(head_dim)
+        weight = th.einsum("bct,bcs->bts", q * scale, k * scale)
+        weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+        h = th.einsum("bts,bcs->bct", weight, v)
+
+        h = h.reshape(b, c, -1)
+        h = self.proj_out(h)
+        return (x_flat + h).reshape(b, c, *spatial)
+
+
 class UNetModel(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
@@ -314,6 +365,7 @@ class UNetModel(nn.Module):
         num_heads=1,
         num_heads_upsample=-1,
         use_scale_shift_norm=False,
+        cond_channels=None,
     ):
         super().__init__()
 
@@ -332,6 +384,7 @@ class UNetModel(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
+        self.cond_channels = cond_channels
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -343,6 +396,27 @@ class UNetModel(nn.Module):
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
+        # ——— condition encoder for cross-attention ———
+        if self.cond_channels is not None:
+            # 将条件图逐级降采样，作为 cross-attn 的 K/V
+            ctx_ch = model_channels
+            enc_layers = [
+                conv_nd(dims, cond_channels, ctx_ch, 3, padding=1),
+                SiLU(),
+            ]
+            for _ in range(len(channel_mult) - 1):
+                enc_layers.extend([
+                    Downsample(ctx_ch, True, dims),
+                    conv_nd(dims, ctx_ch, min(ctx_ch * 2, model_channels * 2), 3, padding=1),
+                    SiLU(),
+                ])
+                ctx_ch = min(ctx_ch * 2, model_channels * 2)
+            self.context_encoder = nn.Sequential(*enc_layers)
+            self.cross_attn_context_dim = ctx_ch
+        else:
+            self.context_encoder = None
+            self.cross_attn_context_dim = 0
+
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
@@ -350,6 +424,8 @@ class UNetModel(nn.Module):
                 )
             ]
         )
+        self.control_injection_scales = {0: 1}
+        self.control_channels = {1: model_channels}
         input_block_chans = [model_channels]
         ch = model_channels
         ds = 1
@@ -381,8 +457,10 @@ class UNetModel(nn.Module):
                 )
                 input_block_chans.append(ch)
                 ds *= 2
+                self.control_injection_scales[len(self.input_blocks) - 1] = ds
+                self.control_channels[ds] = ch
 
-        self.middle_block = TimestepEmbedSequential(
+        middle_layers = [
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -392,6 +470,15 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
             AttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads),
+        ]
+        if self.cond_channels is not None:
+            middle_layers.append(
+                CrossAttentionBlock(
+                    ch, self.cross_attn_context_dim,
+                    num_heads=num_heads, use_checkpoint=use_checkpoint,
+                )
+            )
+        middle_layers.append(
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -401,6 +488,7 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
         )
+        self.middle_block = TimestepEmbedSequential(*middle_layers)
 
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
@@ -459,18 +547,26 @@ class UNetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
-    def forward(self, x, timesteps, y=None):
+    def forward(
+        self, x, timesteps, y=None, cond=None, control=None, control_middle=None
+    ):
         """
         Apply the model to an input batch.
 
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param y: an [N] Tensor of labels, if class-conditional.
+        :param cond: an [N x C_cond x ...] Tensor for cross-attention, if set.
         :return: an [N x C x ...] Tensor of outputs.
         """
         assert (y is not None) == (
             self.num_classes is not None
         ), "must specify y if and only if the model is class-conditional"
+
+        # Encode context for cross-attention
+        context = None
+        if self.cond_channels is not None and cond is not None:
+            context = self.context_encoder(cond)
 
         hs = []
         time_embed_dtype = next(self.time_embed.parameters()).dtype
@@ -481,30 +577,54 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x.type(self.inner_dtype)
-        for module in self.input_blocks:
-            h = module(h, emb)
+        for block_index, module in enumerate(self.input_blocks):
+            h = module(h, emb, context)
+            control_scale = self.control_injection_scales.get(block_index)
+            if control_scale is not None and control is not None:
+                residual = control.get(control_scale)
+                if residual is not None:
+                    if residual.shape != h.shape:
+                        raise ValueError(
+                            f"control[{control_scale}] shape {tuple(residual.shape)} "
+                            f"does not match UNet feature {tuple(h.shape)}"
+                        )
+                    h = h + residual.to(device=h.device, dtype=h.dtype)
             hs.append(h)
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, context)
+        if control_middle is not None:
+            if control_middle.shape != h.shape:
+                raise ValueError(
+                    f"middle control shape {tuple(control_middle.shape)} "
+                    f"does not match UNet feature {tuple(h.shape)}"
+                )
+            h = h + control_middle.to(device=h.device, dtype=h.dtype)
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
+            h = module(cat_in, emb, context)
         out_dtype = next(self.out.parameters()).dtype
         h = h.type(out_dtype)
         return self.out(h)
 
-    def get_feature_vectors(self, x, timesteps, y=None):
+    def get_feature_vectors(
+        self, x, timesteps, y=None, cond=None, control=None, control_middle=None
+    ):
         """
         Apply the model and return all of the intermediate tensors.
 
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param y: an [N] Tensor of labels, if class-conditional.
+        :param cond: an [N x C_cond x ...] Tensor for cross-attention, if set.
         :return: a dict with the following keys:
                  - 'down': a list of hidden state tensors from downsampling.
                  - 'middle': the tensor of the output of the lowest-resolution
                              block in the model.
                  - 'up': a list of hidden state tensors from upsampling.
         """
+        context = None
+        if self.cond_channels is not None and cond is not None:
+            context = self.context_encoder(cond)
+
         hs = []
         time_embed_dtype = next(self.time_embed.parameters()).dtype
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels).to(time_embed_dtype))
@@ -513,15 +633,32 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
         result = dict(down=[], up=[])
         h = x.type(self.inner_dtype)
-        for module in self.input_blocks:
-            h = module(h, emb)
+        for block_index, module in enumerate(self.input_blocks):
+            h = module(h, emb, context)
+            control_scale = self.control_injection_scales.get(block_index)
+            if control_scale is not None and control is not None:
+                residual = control.get(control_scale)
+                if residual is not None:
+                    if residual.shape != h.shape:
+                        raise ValueError(
+                            f"control[{control_scale}] shape {tuple(residual.shape)} "
+                            f"does not match UNet feature {tuple(h.shape)}"
+                        )
+                    h = h + residual.to(device=h.device, dtype=h.dtype)
             hs.append(h)
             result["down"].append(h.type(x.dtype))
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, context)
+        if control_middle is not None:
+            if control_middle.shape != h.shape:
+                raise ValueError(
+                    f"middle control shape {tuple(control_middle.shape)} "
+                    f"does not match UNet feature {tuple(h.shape)}"
+                )
+            h = h + control_middle.to(device=h.device, dtype=h.dtype)
         result["middle"] = h.type(x.dtype)
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
+            h = module(cat_in, emb, context)
             result["up"].append(h.type(x.dtype))
         return result
 

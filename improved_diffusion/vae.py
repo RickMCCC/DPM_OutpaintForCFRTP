@@ -103,6 +103,7 @@ class VAE(nn.Module):
         h = self.to_mu_logvar(h)
         c = h.shape[1] // 2
         mu, logvar = h[:, :c], h[:, c:]
+        logvar = logvar.clamp(-20.0, 10.0)
         return mu, logvar
 
     def reparameterize(self, mu, logvar):
@@ -130,8 +131,9 @@ class VAE(nn.Module):
             h = up_conv(h)
             if i < len(self.dec_up_convs) - 1:
                 h = F.relu(h)
-        # 输入通常在 [-1,1]，这里用 tanh 保持同一范围
-        return torch.tanh(h)
+        # 线性输出，不使用 tanh。
+        # tanh 会导致扩散采样时潜变量稍大就饱和为 ±1，丢失所有细节（见 docs/architecture-analysis.md）。
+        return h
 
     def forward(self, x):
         """
@@ -151,6 +153,7 @@ def kl_loss(mu, logvar):
     对所有空间位置和通道求平均。
     """
     # 0.5 * sum( mu^2 + exp(logvar) - 1 - logvar )
+    logvar = logvar.clamp(-20.0, 10.0)
     kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
     return kld.mean()
 

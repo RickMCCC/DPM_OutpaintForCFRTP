@@ -1,21 +1,31 @@
 # 3D Latent Diffusion Model outpainting training
 data:
-  train_root: data/processed/l2-1.485_train
-  val_root: data/processed/l2-1.485_val
+  train_root: data/processed/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_root: data/processed/l2-1.485_val/size256_mask64_sourcel2-1.485
+  train_cache_dir: data/cache/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_cache_dir: data/cache/l2-1.485_val/size256_mask64_sourcel2-1.485
 
 output:
-  dir: outputs/experiments/ldm_outpaint
+  dir: Z:/Outpaint_Checkpoint/DPM_OutpaintForCFRTP/outputs/checkpoints/outpaint_3d
 
 model:
-  vae_checkpoint: outputs/checkpoints/vae_3d/best.pt
+  vae_checkpoint: outputs/checkpoints/vae_3d/mask64_size256_sourcel2-1.485_ds2_ch8_res2/ckpt/vae_3d_ckpt_45000.pt
   latent_channels: 8
   volume_size: 256
-  num_channels: 320
-  num_res_blocks: 4
-  attention_resolutions: "16,8"
+  num_channels: 32
+  num_res_blocks: 2
+  use_multiscale_context: true
+  use_structure_guidance: true
+  structure_window: 5
+  structure_propagation_latent: 2
+  control_gate_scale: 0.1
+  attention_resolutions: ""
   dropout: 0.0
-  learn_sigma: false
+  learn_sigma: true
   use_checkpoint: true
+  vae_hidden_channels: 64
+  vae_num_res_blocks: 2
+  vae_num_downsamples: 2
 
 diffusion:
   steps: 1000
@@ -27,12 +37,35 @@ diffusion:
 
 training:
   lr: 1.0e-4
-  batch_size: 2
-  microbatch: 1
-  epochs: 2000
-  log_interval: 50
+  backbone_lr: 1.0e-5
+  freeze_backbone_steps: 2000
+  backbone_checkpoint: ""
+  min_lr: 2.0e-5
+  lr_warmup_steps: 500
+  training_steps: 20000
+  training_seed: 20260714
+  ema_rate: 0.9999
+  batch_size: 1
+  log_interval: 10
   save_interval: 2000
-  eval_interval: 1000
   schedule_sampler: uniform
   weight_decay: 0.0
   lr_anneal_steps: 0
+  crop_size: 256
+  eval_crop_size: 256
+  eval_num_samples: 2
+  loss_known_weight: 1.0
+  loss_unknown_weight: 4.0
+  loss_boundary_weight: 0.2
+  voxel_boundary_width: 12
+  voxel_boundary_max_timestep: 250
+  voxel_intensity_weight: 0.5
+  voxel_normal_gradient_weight: 0.25
+  voxel_structure_weight: 0.1
+  structure_tensor_window: 5
+  augment_flip: true
+  allow_spatial_overlap: false
+  latent_stats_max_samples: 0
+  latent_quantile_low: 0.001
+  latent_quantile_high: 0.999
+  latent_quantile_max_vectors: 1000000

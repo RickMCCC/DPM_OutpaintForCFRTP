@@ -28,6 +28,29 @@ from torch.utils.data import Dataset
 from PIL import Image
 
 
+def sanitize_triplet(
+    init: torch.Tensor,
+    mask: torch.Tensor,
+    target: torch.Tensor,
+) -> Dict[str, torch.Tensor]:
+    """Enforce the numeric contract shared by PNG and cached datasets."""
+    init = init.to(dtype=torch.float32)
+    target = target.to(dtype=torch.float32)
+    mask = (mask.to(dtype=torch.float32) >= 0.5).to(dtype=torch.float32)
+
+    if not torch.isfinite(init).all() or not torch.isfinite(target).all():
+        raise ValueError("init and target must contain only finite values")
+    if init.min() < -1.0001 or init.max() > 1.0001:
+        raise ValueError("init must be normalized to [-1, 1]")
+    if target.min() < -1.0001 or target.max() > 1.0001:
+        raise ValueError("target must be normalized to [-1, 1]")
+
+    # Unknown voxels are neutral in normalized space. This avoids encoding an
+    # out-of-distribution volume whose 87.5% unknown area is saturated at -1.
+    init = init * (1.0 - mask)
+    return {"init": init, "mask": mask, "target": target}
+
+
 def _load_gray_to_minus1_1(path: Path) -> torch.Tensor:
     """Load a single 2D slice and convert to [-1, 1] range"""
     img = Image.open(path).convert("L")
@@ -150,14 +173,42 @@ class Outpainting3DTripletDataset(Dataset):
         if self.transform_target is not None:
             target = self.transform_target(target)
 
-        return {"name": base_name, "init": init, "mask": mask, "target": target}
+        return {"name": base_name, **sanitize_triplet(init, mask, target)}
 
 
-# Minimal usage example:
-# from torch.utils.data import DataLoader
-# ds = Outpainting3DTripletDataset(root_dir="samples_outpaint_3d/size128_mask32_source1.576")
-# dl = DataLoader(ds, batch_size=2, shuffle=True, num_workers=0)
-# for batch in dl:
-#     init, mask, target = batch["init"], batch["mask"], batch["target"]
-#     # init/mask/target shape: (B, 1, D, H, W)
-#     # feed to model / training loop
+class CachedOutpainting3DDataset(Dataset):
+    """从预缓存的 .pt 文件加载三元组，消除 PNG I/O 瓶颈。
+
+    每个 .pt 文件包含: {"init": (1,D,H,W), "mask": (1,D,H,W), "target": (1,D,H,W)}
+    """
+
+    def __init__(self, cache_dir: str) -> None:
+        super().__init__()
+        self.cache_dir = Path(cache_dir)
+        manifest_file = self.cache_dir / "manifest.json"
+        if manifest_file.is_file():
+            import json
+            with open(manifest_file) as f:
+                manifest = json.load(f)
+            self.names = manifest["names"]
+        else:
+            self.names = sorted(
+                f.stem for f in self.cache_dir.glob("*.pt")
+            )
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        data = torch.load(self.cache_dir / f"{self.names[idx]}.pt")
+        init = data["init"]
+        mask = data["mask"]
+        target = data["target"]
+        if init.dtype == torch.uint8:
+            init = init.to(dtype=torch.float32) / 127.5 - 1.0
+        if target.dtype == torch.uint8:
+            target = target.to(dtype=torch.float32) / 127.5 - 1.0
+        if mask.dtype == torch.uint8:
+            mask = mask.to(dtype=torch.float32)
+        triplet = sanitize_triplet(init, mask, target)
+        return {"name": self.names[idx], **triplet}

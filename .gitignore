@@ -28,6 +28,7 @@ archive/improved-diffusion-upstream/
 # Local data
 data/raw/
 data/processed/
+data/cache/
 improved_diffusion/training_data/
 
 # Generated outputs

@@ -1,23 +1,28 @@
 # 3D VAE training configuration
 data:
-  train_dir: data/processed/l2-1.485_train
-  val_dir: data/processed/l2-1.485_val
+  train_dir: data/processed/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_dir: data/processed/l2-1.485_val/size256_mask64_sourcel2-1.485
+  train_cache_dir: data/cache/l2-1.485_train/size256_mask64_sourcel2-1.485
+  val_cache_dir: data/cache/l2-1.485_val/size256_mask64_sourcel2-1.485
 
 output:
-  dir: outputs/checkpoints/vae_3d
+  dir: Z:/Outpaint_Checkpoint/DPM_OutpaintForCFRTP/outputs/checkpoints/vae_3d
 
 model:
   latent_channels: 8
   hidden_channels: 64
-  num_res_blocks: 3
-  num_downsamples: 2   # 2 = 4x spatial compression
+  num_res_blocks: 2
+  num_downsamples: 2   # 2 = 4x spatial compression (256→64, 保留更多细节)
 
 training:
   lr: 1.0e-4
   batch_size: 4
-  epochs: 200
-  crop_size: 256
+  epochs: 3000
+  max_steps: 0
+  crop_size: 128
   kl_weight: 0.001
+  kl_warmup_steps: 10000
   perceptual_weight: 0.1
+  lpips_slices_per_volume: 16
   log_interval: 100
   save_interval: 500
