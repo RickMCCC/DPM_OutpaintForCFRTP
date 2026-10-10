@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch as th
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw
 from torch.utils.data import DataLoader
 
 from improved_diffusion import gaussian_diffusion as gd
@@ -265,6 +265,10 @@ def create_argparser():
         allow_spatial_overlap=False,
         validation_seed=20260713,
         validation_use_ema=True,
+        validation_save_volume_pt=True,
+        validation_repeats=1,
+        validation_organized_output=False,
+        eval_only=False,
         remote_output_dir="",
     )
     defaults.update(model_and_diffusion_defaults())
@@ -355,6 +359,8 @@ def resolve_output_dir(args) -> str:
             basename = f"{parts[1]}_{parts[0]}_{parts[2]}"
     run_tag = f"{basename}_ds{args.vae_num_downsamples}_ch{args.latent_channels}_res{args.vae_num_res_blocks}"
     output_path = Path(args.output_dir)
+    if bool(getattr(args, "validation_organized_output", False)):
+        return str(output_path)
     if output_path.name == "ckpt":
         return str(output_path)
     return str(output_path / run_tag / "ckpt")
@@ -1105,6 +1111,49 @@ def save_volume_pngs(volume: th.Tensor, output_dir: str):
             )
 
 
+def representative_orthogonal_png(png_dir: Path, axis: str) -> Path:
+    candidates = []
+    for path in (png_dir / "orthogonal").glob(f"{axis}_*.png"):
+        try:
+            index = int(path.stem.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        candidates.append((index, path))
+    if not candidates:
+        raise FileNotFoundError(f"No {axis}-axis PNGs found in {png_dir}")
+    minimum = min(index for index, _ in candidates)
+    maximum = max(index for index, _ in candidates)
+    # The retained context occupies the volume corners. A plane near the first
+    # quarter exposes both the known corner blocks and their generated boundary.
+    representative = minimum + 0.22 * (maximum - minimum)
+    return min(candidates, key=lambda item: abs(item[0] - representative))[1]
+
+
+def save_orthogonal_comparison(entries: List[Tuple[str, Path]], output_path: Path):
+    axes = ("z", "y", "x")
+    tile_size = 256
+    label_width = 210
+    header_height = 36
+    row_height = tile_size + 18
+    canvas = Image.new(
+        "RGB",
+        (label_width + tile_size * len(axes), header_height + row_height * len(entries)),
+        "white",
+    )
+    draw = ImageDraw.Draw(canvas)
+    for column, axis in enumerate(axes):
+        draw.text((label_width + column * tile_size + 8, 10), axis.upper(), fill="black")
+    for row, (label, png_dir) in enumerate(entries):
+        y = header_height + row * row_height
+        draw.text((8, y + 8), label, fill="black")
+        for column, axis in enumerate(axes):
+            with Image.open(representative_orthogonal_png(png_dir, axis)) as source:
+                image = source.convert("RGB").resize((tile_size, tile_size))
+            canvas.paste(image, (label_width + column * tile_size, y))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path)
+
+
 def validation_metrics(pred, target, init, mask, boundary_width: int = 8):
     unknown = mask
     known = 1.0 - mask
@@ -1248,8 +1297,21 @@ def sample_validation(
     was_training = model.training
     model.eval()
     validation_results = []
+    repeats = max(1, int(args.validation_repeats))
+    organized_output = bool(args.validation_organized_output)
+    comparison_manifest = {
+        "schema_version": 1,
+        "checkpoint": os.path.abspath(args.resume_checkpoint) if args.resume_checkpoint else "",
+        "checkpoint_step": int(step),
+        "control_gate_scale": float(model.control_gate_scale),
+        "validation_seed": int(args.validation_seed),
+        "validation_repeats": repeats,
+        "validation_model": "ema" if args.validation_use_ema else "raw",
+        "samples": [],
+    }
     with th.no_grad():
         for val_idx, val_batch in enumerate(val_items):
+            sample_name = str(val_batch.get("name", f"val_sample_{val_idx}"))
             val_init = val_batch["init"][None].to(device=device, dtype=th.float32)
             val_mask = val_batch["mask"][None].to(device=device, dtype=th.float32)
             val_target = val_batch["target"][None].to(device=device, dtype=th.float32)
@@ -1284,68 +1346,155 @@ def sample_validation(
                     dtype=val_cond.dtype,
                 )
 
-            generator = th.Generator(device=device)
-            generator.manual_seed(int(args.validation_seed) + val_idx)
             sample_shape = (1, args.latent_channels, *z_val_corners.shape[-3:])
-            initial_noise = th.randn(sample_shape, device=device, generator=generator)
-            known_noise = th.randn(sample_shape, device=device, generator=generator)
+            sample_manifest = {
+                "sample_index": val_idx,
+                "sample_name": sample_name,
+                "generations": [],
+            }
+            comparison_entries = []
+            sample_dir = Path(args.output_dir) / f"sample_{val_idx:02d}"
+            if organized_output:
+                reference_png_dir = sample_dir / "reference" / "pngs"
+                masked_png_dir = sample_dir / "masked_reference" / "pngs"
+                save_volume_pngs(val_target, str(reference_png_dir))
+                save_volume_pngs(val_init, str(masked_png_dir))
+                save_volume_pngs(val_mask * 2.0 - 1.0, str(sample_dir / "mask" / "pngs"))
+                comparison_entries.extend(
+                    [
+                        ("Reference", reference_png_dir),
+                        ("Masked reference", masked_png_dir),
+                    ]
+                )
+                if args.validation_save_volume_pt:
+                    th.save(
+                        {"name": sample_name, "target": val_target.cpu()},
+                        sample_dir / "reference" / "volume.pt",
+                    )
+                    th.save(
+                        {
+                            "name": sample_name,
+                            "init": val_init.cpu(),
+                            "mask": val_mask.to(dtype=th.uint8).cpu(),
+                        },
+                        sample_dir / "masked_reference" / "volume.pt",
+                    )
 
-            logger.log(f"Sampling validation volume {val_idx} at step {step}...")
-            sample = diffusion.p_sample_loop(
-                model,
-                sample_shape,
-                noise=initial_noise,
-                clip_denoised=True,
-                model_kwargs={"cond": val_cond, "structure": val_structure},
-                progress=True,
-                known_latent=z_val_init_target_space,
-                known_mask=1.0 - val_mask_latent,
-                known_noise=known_noise,
-            )
+            for repeat_idx in range(repeats):
+                generation_seed = (
+                    int(args.validation_seed) + val_idx + repeat_idx * 1_000_003
+                )
+                generator = th.Generator(device=device)
+                generator.manual_seed(generation_seed)
+                initial_noise = th.randn(sample_shape, device=device, generator=generator)
+                known_noise = th.randn(sample_shape, device=device, generator=generator)
 
-            decoded_latent = bounded_to_latent(sample, latent_stats)
-            out_vox = vae.decode(decoded_latent)
-            out_vox = val_mask * out_vox + (1.0 - val_mask) * val_init
-            diagnostics = volume_diagnostics(out_vox)
-            diagnostics.update(
-                {
-                    "bounded_latent_min": sample.min().item(),
-                    "bounded_latent_max": sample.max().item(),
-                    "bounded_latent_saturation_fraction": (
-                        sample.abs() >= 0.999
-                    ).float().mean().item(),
-                }
-            )
-            diagnostics.update(
-                validation_metrics(out_vox, val_target, val_init, val_mask)
-            )
-            diagnostics.update(
-                orientation_validation_metrics(out_vox, val_target, val_mask)
-            )
-            validation_results.append(diagnostics)
+                logger.log(
+                    f"Sampling validation volume {val_idx}, repeat {repeat_idx + 1}/{repeats} "
+                    f"at step {step} with seed {generation_seed}..."
+                )
+                sample = diffusion.p_sample_loop(
+                    model,
+                    sample_shape,
+                    noise=initial_noise,
+                    clip_denoised=True,
+                    model_kwargs={"cond": val_cond, "structure": val_structure},
+                    progress=True,
+                    known_latent=z_val_init_target_space,
+                    known_mask=1.0 - val_mask_latent,
+                    known_noise=known_noise,
+                )
 
-            val_save_path = os.path.join(args.output_dir, f"val_sample_{val_idx}_step_{step}.pt")
-            th.save(
-                {
-                    "init": val_init.cpu(),
-                    "mask": val_mask.cpu(),
-                    "target": val_target.cpu(),
-                    "pred": out_vox.cpu(),
-                    "diagnostics": diagnostics,
-                },
-                val_save_path,
-            )
-            diagnostics_path = os.path.join(
-                args.output_dir, f"val_sample_{val_idx}_step_{step}_metrics.json"
-            )
-            with open(diagnostics_path, "w", encoding="utf-8") as file:
-                json.dump(diagnostics, file, indent=2, sort_keys=True)
-            save_volume_pngs(
-                out_vox,
-                os.path.join(args.output_dir, f"val_sample_{val_idx}_step_{step}_pngs"),
-            )
-            logger.log(f"Validation diagnostics: {json.dumps(diagnostics, sort_keys=True)}")
-            logger.log(f"Saved validation sample {val_idx} to {val_save_path}")
+                decoded_latent = bounded_to_latent(sample, latent_stats)
+                out_vox = vae.decode(decoded_latent)
+                out_vox = val_mask * out_vox + (1.0 - val_mask) * val_init
+                diagnostics = volume_diagnostics(out_vox)
+                diagnostics.update(
+                    {
+                        "bounded_latent_min": sample.min().item(),
+                        "bounded_latent_max": sample.max().item(),
+                        "bounded_latent_saturation_fraction": (
+                            sample.abs() >= 0.999
+                        ).float().mean().item(),
+                    }
+                )
+                diagnostics.update(
+                    validation_metrics(out_vox, val_target, val_init, val_mask)
+                )
+                diagnostics.update(
+                    orientation_validation_metrics(out_vox, val_target, val_mask)
+                )
+                validation_results.append(diagnostics)
+
+                if organized_output:
+                    repeat_dir = sample_dir / "generated" / f"repeat_{repeat_idx + 1:02d}"
+                    repeat_png_dir = repeat_dir / "pngs"
+                    repeat_dir.mkdir(parents=True, exist_ok=True)
+                    save_volume_pngs(out_vox, str(repeat_png_dir))
+                    with (repeat_dir / "metrics.json").open("w", encoding="utf-8") as file:
+                        json.dump(diagnostics, file, indent=2, sort_keys=True)
+                    if args.validation_save_volume_pt:
+                        th.save(
+                            {
+                                "name": sample_name,
+                                "pred": out_vox.cpu(),
+                                "seed": generation_seed,
+                                "diagnostics": diagnostics,
+                            },
+                            repeat_dir / "volume.pt",
+                        )
+                    comparison_entries.append(
+                        (f"Generated repeat {repeat_idx + 1}", repeat_png_dir)
+                    )
+                    sample_manifest["generations"].append(
+                        {
+                            "repeat": repeat_idx + 1,
+                            "seed": generation_seed,
+                            "metrics": diagnostics,
+                            "directory": str(repeat_dir.relative_to(args.output_dir)),
+                        }
+                    )
+                else:
+                    repeat_suffix = "" if repeats == 1 else f"_repeat_{repeat_idx + 1:02d}"
+                    stem = f"val_sample_{val_idx}_step_{step}{repeat_suffix}"
+                    val_save_path = os.path.join(args.output_dir, f"{stem}.pt")
+                    if args.validation_save_volume_pt:
+                        th.save(
+                            {
+                                "init": val_init.cpu(),
+                                "mask": val_mask.cpu(),
+                                "target": val_target.cpu(),
+                                "pred": out_vox.cpu(),
+                                "seed": generation_seed,
+                                "diagnostics": diagnostics,
+                            },
+                            val_save_path,
+                        )
+                    diagnostics_path = os.path.join(args.output_dir, f"{stem}_metrics.json")
+                    with open(diagnostics_path, "w", encoding="utf-8") as file:
+                        json.dump(diagnostics, file, indent=2, sort_keys=True)
+                    save_volume_pngs(
+                        out_vox,
+                        os.path.join(args.output_dir, f"{stem}_pngs"),
+                    )
+                    if args.validation_save_volume_pt:
+                        logger.log(f"Saved validation sample {val_idx} to {val_save_path}")
+                    else:
+                        logger.log(f"Skipped validation tensor archive for sample {val_idx}")
+                logger.log(
+                    f"Validation diagnostics: {json.dumps(diagnostics, sort_keys=True)}"
+                )
+
+            if organized_output:
+                save_orthogonal_comparison(
+                    comparison_entries, sample_dir / "comparison_orthogonal.png"
+                )
+                comparison_manifest["samples"].append(sample_manifest)
+    if organized_output:
+        with (Path(args.output_dir) / "comparison_manifest.json").open(
+            "w", encoding="utf-8"
+        ) as file:
+            json.dump(comparison_manifest, file, indent=2, ensure_ascii=False, sort_keys=True)
     if was_training:
         model.train()
     return validation_results
@@ -1567,6 +1716,12 @@ def main():
             )
         if int(args.freeze_backbone_steps) != 0:
             raise ValueError("Scratch curriculum requires freeze_backbone_steps=0")
+    if args.eval_only and not args.resume_checkpoint:
+        raise ValueError("eval_only requires --resume_checkpoint")
+    if int(args.validation_repeats) < 1:
+        raise ValueError("validation_repeats must be at least 1")
+    if args.validation_organized_output and not args.eval_only:
+        raise ValueError("validation_organized_output requires --eval_only")
     args.output_dir = resolve_output_dir(args)
     set_training_seed(int(args.training_seed))
 
@@ -1691,10 +1846,20 @@ def main():
                 raise ValueError(f"Resume checkpoint has incompatible {key}")
         model.load_state_dict(resume_state["model"])
         ema_model.load_state_dict(resume_state["ema_model"])
-        opt.load_state_dict(resume_state["optimizer"])
+        if not args.eval_only:
+            opt.load_state_dict(resume_state["optimizer"])
         backbone_checkpoint_hash = resume_state.get("backbone_checkpoint_hash", "")
         step = int(resume_state.get("step", 0))
         logger.log(f"Resume start step: {step}")
+        if args.eval_only:
+            trained_gate_scale = float(
+                resume_config.get("control_gate_scale", args.control_gate_scale)
+            )
+            logger.log(
+                "Evaluation-only guidance override: "
+                f"trained={trained_gate_scale:.4f}, "
+                f"evaluated={float(args.control_gate_scale):.4f}"
+            )
 
     if resume_state is not None:
         latent_stats = move_latent_stats(resume_state["latent_stats"], device)
@@ -1734,6 +1899,30 @@ def main():
 
     eval_count = max(1, min(int(args.eval_num_samples), len(val_dataset)))
     val_items = [val_dataset[i] for i in range(eval_count)]
+    if args.eval_only:
+        evaluation_state = scratch_curriculum_state(step, args)
+        apply_curriculum_to_model(model, evaluation_state)
+        apply_curriculum_to_model(ema_model, evaluation_state)
+        validation_model = ema_model if args.validation_use_ema else model
+        validation_variant = "EMA" if args.validation_use_ema else "raw"
+        logger.log(
+            f"Evaluation-only model: {validation_variant}; "
+            f"gate={float(evaluation_state['control_gate_scale']):.4f}; "
+            f"structure={float(evaluation_state['structure_guidance_scale']):.4f}"
+        )
+        sample_validation(
+            validation_model,
+            diffusion,
+            vae,
+            args,
+            device,
+            val_items,
+            latent_stats,
+            step,
+        )
+        logger.log("evaluation complete")
+        return
+
     data = load_3d_outpainting_data(
         dataset=train_dataset,
         batch_size=args.batch_size,

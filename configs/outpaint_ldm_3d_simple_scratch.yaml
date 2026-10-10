@@ -17,7 +17,7 @@ model:
   use_structure_guidance: true
   structure_window: 5
   structure_propagation_latent: 2
-  control_gate_scale: 0.9
+  control_gate_scale: 1.2
   attention_resolutions: ""
   dropout: 0.0
   learn_sigma: true

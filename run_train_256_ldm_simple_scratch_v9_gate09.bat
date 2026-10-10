@@ -13,5 +13,5 @@ set RUN_DIR=Z:\Outpaint_Checkpoint\DPM_OutpaintForCFRTP\outputs\checkpoints\outp
 set LOG_DIR=outputs\logs
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-python scripts\outpaint_3d_train_ldm.py --config configs\outpaint_ldm_3d_simple_scratch.yaml --vae_checkpoint "%VAE_CKPT%" --output_dir "%RUN_DIR%" > "%LOG_DIR%\ldm_simple_scratch_v9_gate09_%RUN_TS%.out.log" 2> "%LOG_DIR%\ldm_simple_scratch_v9_gate09_%RUN_TS%.err.log"
+python scripts\outpaint_3d_train_ldm.py --config configs\outpaint_ldm_3d_simple_scratch.yaml --vae_checkpoint "%VAE_CKPT%" --control_gate_scale 0.9 --output_dir "%RUN_DIR%" > "%LOG_DIR%\ldm_simple_scratch_v9_gate09_%RUN_TS%.out.log" 2> "%LOG_DIR%\ldm_simple_scratch_v9_gate09_%RUN_TS%.err.log"
 endlocal
